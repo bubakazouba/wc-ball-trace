@@ -42,7 +42,9 @@ a{color:#60a5fa}
   <button id="reset">⟲ Reset</button>
   <select id="speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option></select>
   <span class="clock" id="clock">0'00"</span>
+  <label style="font-size:12.5px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="players" checked> players</label>
 </div>
+<div id="score" style="text-align:center;font-weight:800;font-size:16px;margin:6px 0">—</div>
 <input type="range" id="scrub" min="0" max="100" value="0">
 <div class="row" style="margin-top:6px"><span style="font-size:12px;color:var(--mut);min-width:84px">Trail / fade</span><input type="range" id="trail" min="5" max="400" value="40" style="flex:1"><span id="trailv" style="font-size:11px;color:var(--mut);min-width:90px">40 events (med)</span></div>
 <div id="status">pick a match</div>
@@ -59,7 +61,7 @@ a{color:#60a5fa}
 const RAW='https://raw.githubusercontent.com/statsbomb/open-data/master/data';
 const cv=document.getElementById('pitch'), ctx=cv.getContext('2d');
 const W=1200,H=800,PX=120,PY=80; // statsbomb pitch 120x80
-let events=[], home='', away='', anim=null, idx=0, playing=false, trailLen=40;
+let events=[], home='', away='', anim=null, idx=0, playing=false, trailLen=40, frames={}, goals=[];
 
 function sx(x){return (x/PX)*W;} function sy(y){return (y/PY)*H;}
 function drawPitch(){
@@ -94,10 +96,19 @@ async function loadMatch(){
   try{
     const r=await fetch(`${RAW}/events/${id}.json`); const ev=await r.json();
     events=ev.filter(e=>e.location && Array.isArray(e.location)).map(e=>({
-      x:e.location[0], y:e.location[1], m:e.minute, s:e.second, p:e.period,
+      id:e.id, x:e.location[0], y:e.location[1], m:e.minute, s:e.second, p:e.period,
       team:e.team?e.team.name:'', type:e.type?e.type.name:'' }));
-    idx=0; drawFrame(0); applyHalf();
-    setStatus(`${events.length} on-ball events — press play`);
+    // goal timeline (for live score): shots scored credit shooter; own-goal-against credits opponent
+    goals=[];
+    ev.forEach(e=>{ const tm=e.team?e.team.name:''; const ty=e.type?e.type.name:'';
+      if(e.shot&&e.shot.outcome&&e.shot.outcome.name==='Goal') goals.push({t:e.minute*60+(e.second||0),team:tm});
+      else if(ty==='Own Goal Against') goals.push({t:e.minute*60+(e.second||0),team:(tm===home?away:home)}); });
+    goals.sort((a,b)=>a.t-b.t);
+    // 360 freeze-frames (player positions) keyed by event id
+    frames={}; setStatus('loading player positions (360)…');
+    try{ const f=await fetch(`${RAW}/three-sixty/${id}.json`); if(f.ok){ const fd=await f.json(); fd.forEach(x=>{ if(x.event_uuid&&x.freeze_frame) frames[x.event_uuid]=x.freeze_frame; }); } }catch(_){}
+    idx=0; applyHalf(); drawFrame(0);
+    setStatus(`${events.length} events · ${Object.keys(frames).length} player frames · ${goals.length} goals`);
   }catch(e){ setStatus('failed to load events: '+e); }
 }
 function activeEvents(){
@@ -119,11 +130,26 @@ function drawFrame(i){
     ctx.strokeStyle=`rgba(255,255,255,${0.12+alpha*0.5})`; ctx.lineWidth=1+alpha*2.5;
     ctx.beginPath();ctx.moveTo(sx(e.x),sy(e.y));ctx.lineTo(sx(n.x),sy(n.y));ctx.stroke();
   }
-  // ball now
   const e=a[i];
-  ctx.fillStyle=(e.team===home)?'#60a5fa':'#f87171';
-  ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),9,0,7);ctx.fill();
+  // players (360 freeze-frame) — colors stay team-stable (home blue / away red)
+  if(document.getElementById('players').checked && frames[e.id]){
+    frames[e.id].forEach(p=>{
+      if(!p.location)return;
+      const isHome=(e.team===home)?p.teammate:!p.teammate;
+      ctx.fillStyle=isHome?'rgba(96,165,250,.92)':'rgba(248,113,113,.92)';
+      ctx.beginPath();ctx.arc(sx(p.location[0]),sy(p.location[1]),p.keeper?7:6,0,7);ctx.fill();
+      if(p.keeper){ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();}
+    });
+  }
+  // ball now
+  ctx.fillStyle=(e.team===home)?'#1e3a8a':'#7f1d1d';
+  ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),8,0,7);ctx.fill();
   ctx.fillStyle='#fde047';ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),4.5,0,7);ctx.fill();
+  // live score
+  const tnow=e.m*60+e.s;
+  const hg=goals.filter(g=>g.t<=tnow&&g.team===home).length;
+  const ag=goals.filter(g=>g.t<=tnow&&g.team===away).length;
+  document.getElementById('score').textContent=`${home} ${hg} – ${ag} ${away}`;
   document.getElementById('clock').textContent=fmt(e.m,e.s);
   document.getElementById('scrub').value=i;
 }
@@ -145,6 +171,7 @@ document.getElementById('reset').onclick=()=>{stop();idx=0;drawFrame(0);};
 document.getElementById('speed').onchange=()=>{};
 document.getElementById('scrub').oninput=(e)=>{stop();drawFrame(+e.target.value);};
 document.getElementById('trail').oninput=(e)=>{trailLen=+e.target.value;const lbl=trailLen<40?'short':trailLen<150?'med':'long';document.getElementById('trailv').textContent=trailLen+' events ('+lbl+')';drawFrame(idx);};
+document.getElementById('players').onchange=()=>drawFrame(idx);
 drawPitch(); loadMatches();
 </script>
 </body>
