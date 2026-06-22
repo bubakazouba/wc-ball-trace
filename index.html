@@ -44,6 +44,7 @@ a{color:#60a5fa}
   <span class="clock" id="clock">0'00"</span>
 </div>
 <input type="range" id="scrub" min="0" max="100" value="0">
+<div class="row" style="margin-top:6px"><span style="font-size:12px;color:var(--mut);min-width:84px">Trail / fade</span><input type="range" id="trail" min="5" max="400" value="40" style="flex:1"><span id="trailv" style="font-size:11px;color:var(--mut);min-width:90px">40 events (med)</span></div>
 <div id="status">pick a match</div>
 <canvas id="pitch" width="1200" height="800"></canvas>
 <div class="legend">
@@ -58,7 +59,7 @@ a{color:#60a5fa}
 const RAW='https://raw.githubusercontent.com/statsbomb/open-data/master/data';
 const cv=document.getElementById('pitch'), ctx=cv.getContext('2d');
 const W=1200,H=800,PX=120,PY=80; // statsbomb pitch 120x80
-let events=[], home='', away='', anim=null, idx=0, playing=false;
+let events=[], home='', away='', anim=null, idx=0, playing=false, trailLen=40;
 
 function sx(x){return (x/PX)*W;} function sy(y){return (y/PY)*H;}
 function drawPitch(){
@@ -110,8 +111,8 @@ function drawFrame(i){
   const a=activeEvents(); if(!a.length){drawPitch();return;}
   i=Math.max(0,Math.min(i,a.length-1)); idx=i;
   drawPitch();
-  // trace: last ~40 events
-  const start=Math.max(0,i-40);
+  // trace: last `trailLen` events (slider-controlled fade)
+  const start=Math.max(0,i-trailLen);
   for(let k=start;k<i;k++){
     const e=a[k], n=a[k+1]; if(!n)break;
     const alpha=(k-start)/(i-start||1);
@@ -143,6 +144,7 @@ document.getElementById('play').onclick=()=>{ playing?stop():play(); };
 document.getElementById('reset').onclick=()=>{stop();idx=0;drawFrame(0);};
 document.getElementById('speed').onchange=()=>{};
 document.getElementById('scrub').oninput=(e)=>{stop();drawFrame(+e.target.value);};
+document.getElementById('trail').oninput=(e)=>{trailLen=+e.target.value;const lbl=trailLen<40?'short':trailLen<150?'med':'long';document.getElementById('trailv').textContent=trailLen+' events ('+lbl+')';drawFrame(idx);};
 drawPitch(); loadMatches();
 </script>
 </body>
