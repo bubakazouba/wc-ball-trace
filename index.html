@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World Cup Ball-Trace — real StatsBomb data</title>
+<style>
+:root{--bg:#0b1220;--card:#16213a;--ink:#e6edf6;--mut:#93a4bd;--line:#28395c;--grass:#1d6b3a;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;padding:12px;max-width:760px;margin:0 auto}
+h1{font-size:19px;margin:0 0 2px}
+.sub{color:var(--mut);font-size:12.5px;margin-bottom:12px}
+.ctrls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+select,button{background:#1f2d4a;color:var(--ink);border:1px solid #36507e;border-radius:8px;padding:8px 10px;font-size:13px}
+button{cursor:pointer}
+button.primary{background:#3b82f6;border-color:#3b82f6;color:#06121f;font-weight:700}
+#status{font-size:12.5px;color:var(--mut);margin:6px 0}
+canvas{width:100%;height:auto;background:var(--grass);border-radius:10px;display:block;border:1px solid var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--mut);margin-top:8px}
+.legend span{display:flex;align-items:center;gap:5px}.legend i{width:12px;height:12px;border-radius:50%;display:inline-block}
+input[type=range]{width:100%;margin-top:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.note{font-size:11.5px;color:#64748b;margin-top:10px;line-height:1.5}
+.clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:14px;min-width:56px}
+a{color:#60a5fa}
+</style>
+</head>
+<body>
+<h1>⚽ World Cup Ball-Trace</h1>
+<div class="sub">Real on-ball event data (StatsBomb open data). Pick a match → watch the ball's path trace across the pitch.</div>
+
+<div class="ctrls">
+  <select id="comp">
+    <option value="43/106">FIFA World Cup 2022</option>
+    <option value="43/3">FIFA World Cup 2018</option>
+  </select>
+  <select id="match"><option>loading matches…</option></select>
+  <select id="half"><option value="0">Full match</option><option value="1">1st half</option><option value="2">2nd half</option></select>
+</div>
+<div class="row">
+  <button id="play" class="primary">▶ Play</button>
+  <button id="reset">⟲ Reset</button>
+  <select id="speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option></select>
+  <span class="clock" id="clock">0'00"</span>
+</div>
+<input type="range" id="scrub" min="0" max="100" value="0">
+<div id="status">pick a match</div>
+<canvas id="pitch" width="1200" height="800"></canvas>
+<div class="legend">
+  <span><i id="lh" style="background:#60a5fa"></i><span id="hn">Home</span></span>
+  <span><i id="la" style="background:#f87171"></i><span id="an">Away</span></span>
+  <span><i style="background:#fde047"></i>ball now</span>
+  <span>line = recent ball path (fades)</span>
+</div>
+<div class="note">Data = StatsBomb open data (free). The "ball path" connects consecutive on-ball events (passes, carries, shots, etc.) in match time — it's event-resolution, not continuous GPS tracking, so it's the real sequence of where the ball was, point to point. Colour = which team had the ball. 2026 isn't shown because its data isn't publicly released yet. Source: <a href="https://github.com/statsbomb/open-data">github.com/statsbomb/open-data</a></div>
+
+<script>
+const RAW='https://raw.githubusercontent.com/statsbomb/open-data/master/data';
+const cv=document.getElementById('pitch'), ctx=cv.getContext('2d');
+const W=1200,H=800,PX=120,PY=80; // statsbomb pitch 120x80
+let events=[], home='', away='', anim=null, idx=0, playing=false;
+
+function sx(x){return (x/PX)*W;} function sy(y){return (y/PY)*H;}
+function drawPitch(){
+  ctx.fillStyle='#1d6b3a';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(255,255,255,.5)';ctx.lineWidth=2;
+  ctx.strokeRect(4,4,W-8,H-8);
+  ctx.beginPath();ctx.moveTo(W/2,4);ctx.lineTo(W/2,H-4);ctx.stroke();
+  ctx.beginPath();ctx.arc(W/2,H/2,sx(10),0,7);ctx.stroke();
+  // boxes
+  const bw=sx(18), bh=sy(62)-sy(18);
+  ctx.strokeRect(4,sy(18),bw,bh); ctx.strokeRect(W-4-bw,sy(18),bw,bh);
+}
+function fmt(m,s){return m+"'"+String(s).padStart(2,'0')+'"';}
+
+async function loadMatches(){
+  const cs=document.getElementById('comp').value;
+  const sel=document.getElementById('match'); sel.innerHTML='<option>loading…</option>';
+  setStatus('loading match list…');
+  try{
+    const r=await fetch(`${RAW}/matches/${cs}.json`); const m=await r.json();
+    m.sort((a,b)=>(a.match_date||'').localeCompare(b.match_date||''));
+    sel.innerHTML=m.map(x=>`<option value="${x.match_id}" data-h="${x.home_team.home_team_name}" data-a="${x.away_team.away_team_name}">${x.home_team.home_team_name} ${x.home_score}-${x.away_score} ${x.away_team.away_team_name} (${(x.match_date||'').slice(0,10)})</option>`).join('');
+    setStatus(`${m.length} matches — pick one`);
+    loadMatch();
+  }catch(e){ setStatus('failed to load matches: '+e); }
+}
+async function loadMatch(){
+  const sel=document.getElementById('match'); const opt=sel.selectedOptions[0]; if(!opt)return;
+  const id=sel.value; home=opt.dataset.h; away=opt.dataset.a;
+  document.getElementById('hn').textContent=home; document.getElementById('an').textContent=away;
+  setStatus('loading ball events…'); stop();
+  try{
+    const r=await fetch(`${RAW}/events/${id}.json`); const ev=await r.json();
+    events=ev.filter(e=>e.location && Array.isArray(e.location)).map(e=>({
+      x:e.location[0], y:e.location[1], m:e.minute, s:e.second, p:e.period,
+      team:e.team?e.team.name:'', type:e.type?e.type.name:'' }));
+    idx=0; drawFrame(0); applyHalf();
+    setStatus(`${events.length} on-ball events — press play`);
+  }catch(e){ setStatus('failed to load events: '+e); }
+}
+function activeEvents(){
+  const h=document.getElementById('half').value;
+  if(h==='1')return events.filter(e=>e.p===1);
+  if(h==='2')return events.filter(e=>e.p===2);
+  return events;
+}
+function applyHalf(){ idx=0; const a=activeEvents(); document.getElementById('scrub').max=Math.max(1,a.length-1); drawFrame(0); }
+function drawFrame(i){
+  const a=activeEvents(); if(!a.length){drawPitch();return;}
+  i=Math.max(0,Math.min(i,a.length-1)); idx=i;
+  drawPitch();
+  // trace: last ~40 events
+  const start=Math.max(0,i-40);
+  for(let k=start;k<i;k++){
+    const e=a[k], n=a[k+1]; if(!n)break;
+    const alpha=(k-start)/(i-start||1);
+    ctx.strokeStyle=`rgba(255,255,255,${0.12+alpha*0.5})`; ctx.lineWidth=1+alpha*2.5;
+    ctx.beginPath();ctx.moveTo(sx(e.x),sy(e.y));ctx.lineTo(sx(n.x),sy(n.y));ctx.stroke();
+  }
+  // ball now
+  const e=a[i];
+  ctx.fillStyle=(e.team===home)?'#60a5fa':'#f87171';
+  ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),9,0,7);ctx.fill();
+  ctx.fillStyle='#fde047';ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),4.5,0,7);ctx.fill();
+  document.getElementById('clock').textContent=fmt(e.m,e.s);
+  document.getElementById('scrub').value=i;
+}
+function step(){
+  const a=activeEvents(); const sp=+document.getElementById('speed').value;
+  idx+=sp; if(idx>=a.length){stop();idx=a.length-1;drawFrame(idx);return;}
+  drawFrame(idx);
+  anim=setTimeout(()=>requestAnimationFrame(step), 120);
+}
+function play(){ if(playing)return; playing=true; document.getElementById('play').textContent='⏸ Pause'; step(); }
+function stop(){ playing=false; clearTimeout(anim); document.getElementById('play').textContent='▶ Play'; }
+function setStatus(t){document.getElementById('status').textContent=t;}
+
+document.getElementById('comp').onchange=loadMatches;
+document.getElementById('match').onchange=loadMatch;
+document.getElementById('half').onchange=applyHalf;
+document.getElementById('play').onclick=()=>{ playing?stop():play(); };
+document.getElementById('reset').onclick=()=>{stop();idx=0;drawFrame(0);};
+document.getElementById('speed').onchange=()=>{};
+document.getElementById('scrub').oninput=(e)=>{stop();drawFrame(+e.target.value);};
+drawPitch(); loadMatches();
+</script>
+</body>
+</html>
